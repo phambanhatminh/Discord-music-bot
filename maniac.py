@@ -1,6 +1,7 @@
-from discord.ext import commands
+
 from dotenv import load_dotenv
-import discord 
+import discord
+from discord.ext import commands
 from discord import Message
 import asyncio
 import yt_dlp
@@ -19,6 +20,7 @@ class QueueIsEmpty(commands.CommandError):
 def run_bot():
     load_dotenv()
     TOKEN = os.getenv('discord_token')
+    print(f" Token is: {TOKEN}")
     intents = discord.Intents.default()
     intents.message_content = True
     intents.voice_states = True
@@ -36,16 +38,27 @@ def run_bot():
         print(f'{client.user} is now jamming')
 
     async def play_next(ctx):
-        if queues[ctx.guild.id] != []:
-            # Fetch the first song in the queue
-            link = queues[ctx.guild.id].pop(0)
-            await play(ctx, link)
+        if ctx.guild.id in queues and queues[ctx.guild.id]:
+            song_info = queues[ctx.guild.id].pop(0)
+            query = song_info['url']
+
+        loop = asyncio.get_event_loop()
+        data = await loop.run_in_executor(None, lambda: ytdl.extract_info(query, download=False))
+        if 'entries' in data:
+            data = data['entries'][0]
+
+        title = data.get('title', 'Unknown Title')
+        url = data['url']
+        player = discord.FFmpegOpusAudio(url, **ffmpeg_options)
+
+        voice_clients[ctx.guild.id].play(player, after=lambda e: asyncio.run_coroutine_threadsafe(play_next(ctx), client.loop))
+        await ctx.send(f"🎶 Now playing: **{title}**")
 
     @client.command(name="play")
-    async def play(ctx, link):
+    async def play(ctx, *, query):
         try:
             if ctx.author.voice is None:
-                return await ctx.send("Vào voice đi đã ccho")
+                return await ctx.send("Join a voice channel first!")
             
             voice_client = await ctx.author.voice.channel.connect()
             voice_clients[ctx.guild.id] = voice_client
@@ -53,12 +66,33 @@ def run_bot():
             print(e)
         try:
             loop = asyncio.get_event_loop()
-            data = await loop.run_in_executor(None, lambda: ytdl.extract_info(link, download=False))
 
+
+            if not re.match(r'^https?://', query):
+                query = f'ytsearch:{query}'
+            data = await loop.run_in_executor(None, lambda: ytdl.extract_info(query, download=False))
+
+            if 'entries' in data:
+                data = data['entries'][0]
+            
             song = data['url']
+            title = data.get('title', 'Unknown Title')
+            webpage_url = data.get('webpage_url', 'Unknown URL')
+
+            if voice_clients[ctx.guild.id].is_playing() or queues.get(ctx.guild.id):
+                if ctx.guild.id not in queues:
+                    queues[ctx.guild.id] = []
+                queues[ctx.guild.id].append({
+                    'title': title,
+                    'url': webpage_url
+                })
+                return await ctx.send(f"Added **{title}** to the queue!")
+            
             player = discord.FFmpegOpusAudio(song, **ffmpeg_options)
 
+
             voice_clients[ctx.guild.id].play(player, after=lambda e: asyncio.run_coroutine_threadsafe(play_next(ctx), client.loop))
+            await ctx.send(f"Now playing: **{title}**")
         except Exception as e:
             print(e)
 
@@ -68,7 +102,7 @@ def run_bot():
             queues[ctx.guild.id].clear()
             await ctx.send("Queue cleared!")
         else:
-            await ctx.send("Có mẹ j đâu mà clear")
+            await ctx.send("There is nothing to clear.")
 
     @client.command(name="pause")
     async def pause(ctx):
@@ -84,6 +118,16 @@ def run_bot():
         except Exception as e:
             print(e)
 
+    @client.command(name="queue")
+    async def show_queue(ctx):
+        if ctx.guild.id not in queues or not queues[ctx.guild.id]:
+            return await ctx.send("📭 Queue is empty!")
+
+        message = "🎶 **Current Queue:**\n"
+        for i, song in enumerate(queues[ctx.guild.id], start=1):
+            message += f"{i}. {song['title']}\n"
+
+        await ctx.send(message)
     @client.command(name="stop")
     async def stop(ctx):
         try:
@@ -92,20 +136,13 @@ def run_bot():
             del voice_clients[ctx.guild.id]
         except Exception as e:
             print(e)
-
-    @client.command(name="add")
-    async def queue(ctx, url):
-        if ctx.guild.id not in queues:
-            queues[ctx.guild.id] = []
-        queues[ctx.guild.id].append(url)
-        await ctx.send("Đã thêm vào playlist!")
+        await ctx.send("Stopped and disconnected from the voice channel.")
 
     @client.command(name="skip")
     async def skip(ctx):
         try:
             voice_clients[ctx.guild.id].stop()
-            await play_next(ctx)
-            await ctx.send('Skip qua bài hát kế tiếp!')
+            await ctx.send('Skip to the next song!')
         except Exception as e:
             print(e)
 
@@ -116,14 +153,5 @@ def run_bot():
         except Exception as e:
             print(e)
 
-    
-
-
-    
-
-    
-        
-
-
-    client.run('MTIyMjQ4OTgwMzAyMzU4MTIwNA.G0tkYE.nwhpsb55CVH-CFjiFbXjtr_QSFsP8Nqt7Jmiwc')
+    client.run(TOKEN)
 
